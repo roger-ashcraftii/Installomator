@@ -1,5 +1,15 @@
 #!/bin/zsh --no-rcs
-label="" # if no label is sent to the script, this will be used
+
+#########################################################################################
+# Beginning of Azure Log Analytics wrapper
+#########################################################################################
+
+# Log start time for ALA information
+StartTime=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+
+#########################################################################################
+# Insert script to be wrapped, including any necessary triggered packages
+#########################################################################################
 
 # Installomator
 #
@@ -14,7 +24,6 @@ label="" # if no label is sent to the script, this will be used
 #    Søren Theilgaard - @Theile
 #    Adam Codega - @acodega
 #    Trevor Sysock - @BigMacAdmin
-#    Bart Reardon - @bartreardon
 #
 # with contributions from many others
 
@@ -348,42 +357,152 @@ if [[ $(/usr/bin/arch) == "arm64" ]]; then
         rosetta2=no
     fi
 fi
-VERSION="10.9beta"
-VERSIONDATE="2025-06-24"
+VERSION="10.8beta"
+VERSIONDATE="2025-03-28"
 
 # MARK: Functions
 
 cleanupAndExit() { # $1 = exit code, $2 message, $3 level
-    if [ -n "$dmgmount" ]; then
-        # unmount disk image
-        printlog "Unmounting $dmgmount" DEBUG
-        unmountingOut=$(hdiutil detach "$dmgmount" 2>&1)
-        printlog "Debugging enabled, Unmounting output was:\n$unmountingOut" DEBUG
-    fi
-    if [ "$DEBUG" -ne 1 ]; then
-        # remove the temporary working directory when done (only if DEBUG is not used)
-        printlog "Deleting $tmpDir" DEBUG
-        deleteTmpOut=$(rm -Rfv "$tmpDir")
-        printlog "Debugging enabled, Deleting tmpDir output was:\n$deleteTmpOut" DEBUG
-    fi
-
-    # If we closed any processes, reopen the app again
-    reopenClosedProcess
-    if [[ -n $2 && $1 -ne 0 ]]; then
-        printlog "ERROR: $2" $3
-        updateDialog "fail" "Error ($1; $2)"
-    else
-        printlog "$2" $3
-        updateDialog "success" ""
-    fi
-    printlog "################## End Installomator, exit code $1 \n" REQ
-
-    # if label is wrong and we wanted name of the label, then return ##################
-    if [[ $RETURN_LABEL_NAME -eq 1 ]]; then
-        1=0 # If only label name should be returned we exit without any errors
-        echo "#"
-    fi
-    exit "$1"
+  local exit_code="$1"
+  local exit_message="$2"
+  local exit_level="$3"
+  
+  if [ -n "$dmgmount" ]; then
+    # unmount disk image
+    printlog "Unmounting $dmgmount" DEBUG
+    unmountingOut=$(hdiutil detach "$dmgmount" 2>&1)
+    printlog "Debugging enabled, Unmounting output was:\n$unmountingOut" DEBUG
+  fi
+  if [ "$DEBUG" -ne 1 ]; then
+    # remove the temporary working directory when done (only if DEBUG is not used)
+    printlog "Deleting $tmpDir" DEBUG
+    deleteTmpOut=$(rm -Rfv "$tmpDir")
+    printlog "Debugging enabled, Deleting tmpDir output was:\n$deleteTmpOut" DEBUG
+  fi
+  
+  # If we closed any processes, reopen the app again
+  reopenClosedProcess
+  
+  if [[ -n $exit_message && $exit_code -ne 0 ]]; then
+    printlog "ERROR: $exit_message" "$exit_level"
+    updateDialog "fail" "Error ($exit_code; $exit_message)"
+  else
+    printlog "$exit_message" "$exit_level"
+    updateDialog "success" ""
+  fi
+  printlog "################## End Installomator, exit code $exit_code \n" REQ
+  
+  #########################################################################################
+  # Define validation for the wrapped script
+  #########################################################################################
+  if [[ "$exit_code" -eq 0 ]]; then
+    Outcome="Success"
+  else
+    Outcome="Failure"
+  fi
+  
+  echo "Installomator Outcome: $Outcome"
+  
+  #########################################################################################
+  # Modify variables below to define wrapped script 
+  #########################################################################################
+  
+  # Data to edit for the JSON
+  # Jamf Policy Name: Ex. Microsoft Defender
+  PackageName="$name"
+  # Version of policy: Ex. 1.2.3.4, 2024-01-01, R1
+  Version="$appNewVersion"
+  # Ex. Install, Uninstall, Enable, Disable
+  DeploymentType="Install"
+  # Ex. Self Service, Deployment
+  DeploymentMethod="App-Auto-Patch"
+  
+  #########################################################################################
+  # You should not need to modify anything below this point
+  #########################################################################################
+  
+  # This will be the table in ALA to which you want to send the log information
+  # ALA Production Table:
+  # CustomLogName="Mac_ADT_v1"
+  # ALA Dev Testing Table:
+  CustomLogName="Mac_Test_ALA_Config"
+  
+  # Data that should remain static for the JSON
+  FinishTime=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+  ComputerName=$(hostname)
+  LoggedOnUser=$(stat -f '%Su' /dev/console)
+  ExitCode="$?"
+  
+  # Format for JSON
+  LogEntry="{
+    \"ComputerName\":\"${ComputerName}\",
+    \"DeploymentType\":\"${DeploymentType}\",
+    \"DeploymentMethod\":\"${DeploymentMethod}\",
+    \"ExitCode\":\"${ExitCode}\",
+    \"FinishTime\":\"${FinishTime}\",
+    \"LoggedOnUser\":\"${LoggedOnUser}\",
+    \"Outcome\":\"${Outcome}\",
+    \"PackageName\":\"${PackageName}\",
+    \"StartTime\":\"${StartTime}\",
+    \"Version\":\"${Version}\"
+}"
+  
+  # Our Workspace ID
+  WorkspaceID="3d688ad3-6339-4002-82f9-c7ef472bad88"
+  
+  # Our Primary Key
+  PrimaryKey="Efqt3K6srdLWA4me+ZeVAiXjvbAY/ckD1bMPQPOjxHDq03ItQjKssSNBCAvEjrvuYg4Pze/IQyCHIW1RDd48pw=="
+  
+  # Resource
+  Resource="/api/logs"
+  
+  # Build signature
+  date_iso=$(TZ=GMT date "+%a, %d %h %Y %H:%M:%S %Z")
+  msversion="2016-04-01"
+  method="POST"
+  contentType="application/json"
+  contentLength=${#LogEntry}
+  xHeaders="x-ms-date:$date_iso"
+  String_to_Sign="$method\n$contentLength\n$contentType\n$xHeaders\n$Resource"
+  Decoded_Key="$(echo -n $PrimaryKey | base64 -d | xxd -p -c256)"
+  Sign=$(printf "$String_to_Sign" | openssl dgst -sha256 -mac HMAC -macopt "hexkey:$Decoded_Key" -binary | base64 )
+  
+  echo -e "HTTP Response: \c"
+  
+  # cURL using signature
+  curl -X POST \
+  -H "x-ms-date:$date_iso" \
+  -H "x-ms-version:$msversion" \
+  -H "Authorization: SharedKey $WorkspaceID:$Sign" \
+  -H "Content-Type: $contentType" \
+  -H "Content-Length:$contentLength" \
+  -H "Log-Type: $CustomLogName" \
+  -d "$LogEntry" \
+  -w "%{http_code}" \
+  "https://$WorkspaceID.ods.opinsights.azure.com$Resource?api-version=2016-04-01"
+  
+  #########################################################################################
+  # Test of expected log entry (Can remain commented unless debugging)
+  #########################################################################################
+  
+  # echo -e "\n\nExpected Log Entry:\n"
+  # echo -e "$CustomLogName\n"
+  
+  # ( 
+  # echo "TimeGenerated [UTC] | ComputerName_s | DeploymentType_s | DeploymentMethod_s | ExitCode_s | FinishTime_t [UTC] | LoggedOnUser_s | Outcome_s | PackageName_s | StartTime_t [UTC] | Version_s | Type | TenantID | SourceSystem"
+  # echo "(FinishTime + ~1 sec | $ComputerName | $DeploymentType | $DeploymentMethod | $ExitCode | $FinishTime | $LoggedOnUser | $Outcome | $PackageName | $StartTime | $Version | $CustomLogName | $WorkspaceID | RestAPI"
+  # ) | column -s '|' -t
+  
+  #################################################################################
+  # END Azure Log Analytics wrapper
+  #################################################################################
+  
+  # if label is wrong and we wanted name of the label, then return ##################
+  if [[ $RETURN_LABEL_NAME -eq 1 ]]; then
+    1=0 # If only label name should be returned we exit without any errors
+    echo "#"
+  fi
+  exit "$1"
 }
 
 runAsUser() {
@@ -1436,15 +1555,6 @@ fi
 # first argument is the label
 label=$1
 
-# lowercase the label
-label=${label:l}
-
-# separate check for 'version' in order to print plain version number without any other information
-if [[ $label == "version" ]]; then
-    echo "$VERSION"
-    exit 0
-fi
-
 # MARK: reading rest of the arguments
 argumentsArray=()
 while [[ -n $1 ]]; do
@@ -1459,6 +1569,15 @@ while [[ -n $1 ]]; do
 done
 printlog "Total items in argumentsArray: ${#argumentsArray[@]}" INFO
 printlog "argumentsArray: ${argumentsArray[*]}" INFO
+
+# lowercase the label
+label=${label:l}
+
+# separate check for 'version' in order to print plain version number without any other information
+if [[ $label == "version" ]]; then
+    echo "$VERSION"
+    exit 0
+fi
 
 # NOTE: Use proxy for network access if defined
 if [[ -n $PROXY ]]; then
@@ -1691,7 +1810,7 @@ abetterfinderrename11)
 abletonlive12intro)
     name="Ableton Live 12 Intro"
     type="dmg"
-    appNewVersion=$(curl -fs "https://www.ableton.com/en/release-notes/live-12/" | grep -A 1 "class=\"release-notes\" id=\"live-" | sed 's/.*-\([0-9\.][0-9\.]*\).*/\1/' | grep -Eo "[0-9]+\.[0-9]+(\.[0-9]+)?" | head -1 | xargs)
+    appNewVersion=$(curl -fs "https://www.ableton.com/en/release-notes/live-12/" | grep -A 1 "class=\"release-notes\" id=\"live-" | sed 's/.*-\([0-9\.][0-9\.]*\).*/\1/' | grep -o "[0-9.].[0-9.].[0-9.].[0-9.]*" | head -1 | xargs)
     appCustomVersion(){ defaults read "/Applications/${name}.app/Contents/Info.plist" CFBundleVersion | cut -d" " -f1 | xargs }
     downloadURL="https://cdn-downloads.ableton.com/channels/${appNewVersion}/ableton_live_intro_${appNewVersion}_universal.dmg"
     blockingProcesses=("Live")
@@ -1700,7 +1819,7 @@ abletonlive12intro)
 abletonlive12lite)
     name="Ableton Live 12 Lite"
     type="dmg"
-    appNewVersion=$(curl -fs "https://www.ableton.com/en/release-notes/live-12/" | grep -A 1 "class=\"release-notes\" id=\"live-" | sed 's/.*-\([0-9\.][0-9\.]*\).*/\1/' | grep -Eo "[0-9]+\.[0-9]+(\.[0-9]+)?" | head -1 | xargs)
+    appNewVersion=$(curl -fs "https://www.ableton.com/en/release-notes/live-12/" | grep -A 1 "class=\"release-notes\" id=\"live-" | sed 's/.*-\([0-9\.][0-9\.]*\).*/\1/' | grep -o "[0-9.].[0-9.].[0-9.].[0-9.]*" | head -1 | xargs)
     appCustomVersion(){ defaults read "/Applications/${name}.app/Contents/Info.plist" CFBundleVersion | cut -d" " -f1 | xargs }
     downloadURL="https://cdn-downloads.ableton.com/channels/${appNewVersion}/ableton_live_lite_${appNewVersion}_universal.dmg"
     blockingProcesses=("Live")
@@ -1709,7 +1828,7 @@ abletonlive12lite)
 abletonlive12standard)
     name="Ableton Live 12 Standard"
     type="dmg"
-    appNewVersion=$(curl -fs "https://www.ableton.com/en/release-notes/live-12/" | grep -A 1 "class=\"release-notes\" id=\"live-" | sed 's/.*-\([0-9\.][0-9\.]*\).*/\1/' | grep -Eo "[0-9]+\.[0-9]+(\.[0-9]+)?" | head -1 | xargs)
+    appNewVersion=$(curl -fs "https://www.ableton.com/en/release-notes/live-12/" | grep -A 1 "class=\"release-notes\" id=\"live-" | sed 's/.*-\([0-9\.][0-9\.]*\).*/\1/' | grep -o "[0-9.].[0-9.].[0-9.].[0-9.]*" | head -1 | xargs)
     appCustomVersion(){ defaults read "/Applications/${name}.app/Contents/Info.plist" CFBundleVersion | cut -d" " -f1 | xargs }
     downloadURL="https://cdn-downloads.ableton.com/channels/${appNewVersion}/ableton_live_standard_${appNewVersion}_universal.dmg"
     blockingProcesses=("Live")
@@ -1718,7 +1837,7 @@ abletonlive12standard)
 abletonlive12suite)
     name="Ableton Live 12 Suite"
     type="dmg"
-    appNewVersion=$(curl -fs "https://www.ableton.com/en/release-notes/live-12/" | grep -A 1 "class=\"release-notes\" id=\"live-" | sed 's/.*-\([0-9\.][0-9\.]*\).*/\1/' | grep -Eo "[0-9]+\.[0-9]+(\.[0-9]+)?" | head -1 | xargs)
+    appNewVersion=$(curl -fs "https://www.ableton.com/en/release-notes/live-12/" | grep -A 1 "class=\"release-notes\" id=\"live-" | sed 's/.*-\([0-9\.][0-9\.]*\).*/\1/' | grep -o "[0-9.].[0-9.].[0-9.].[0-9.]*" | head -1 | xargs)
     appCustomVersion(){ defaults read "/Applications/${name}.app/Contents/Info.plist" CFBundleVersion | cut -d" " -f1 | xargs }
     downloadURL="https://cdn-downloads.ableton.com/channels/${appNewVersion}/ableton_live_suite_${appNewVersion}_universal.dmg"
     blockingProcesses=("Live")
@@ -1727,7 +1846,7 @@ abletonlive12suite)
 abletonlive12trial)
     name="Ableton Live 12 Trial"
     type="dmg"
-    appNewVersion=$(curl -fs "https://www.ableton.com/en/release-notes/live-12/" | grep -A 1 "class=\"release-notes\" id=\"live-" | sed 's/.*-\([0-9\.][0-9\.]*\).*/\1/' | grep -Eo "[0-9]+\.[0-9]+(\.[0-9]+)?" | head -1 | xargs)
+    appNewVersion=$(curl -fs "https://www.ableton.com/en/release-notes/live-12/" | grep -A 1 "class=\"release-notes\" id=\"live-" | sed 's/.*-\([0-9\.][0-9\.]*\).*/\1/' | grep -o "[0-9.].[0-9.].[0-9.].[0-9.]*" | head -1 | xargs)
     appCustomVersion(){ defaults read "/Applications/${name}.app/Contents/Info.plist" CFBundleVersion | cut -d" " -f1 | xargs }
     downloadURL="https://cdn-downloads.ableton.com/channels/${appNewVersion}/ableton_live_trial_${appNewVersion}_universal.dmg"
     blockingProcesses=("Live")
@@ -1805,9 +1924,9 @@ adobecreativeclouddesktop)
         exit 75
     fi
     if [[ "$(arch)" == "arm64" ]]; then
-        downloadURL=$(curl -fs "https://helpx.adobe.com/in/download-install/kb/creative-cloud-desktop-app-download.html" | grep -o 'https.*macarm64.*dmg' | head -1 | cut -d '"' -f1)
+        downloadURL=$(curl -fs "https://helpx.adobe.com/download-install/kb/creative-cloud-desktop-app-download.html" | grep -o 'https.*macarm64.*dmg' | head -1 | cut -d '"' -f1)
     else
-        downloadURL=$(curl -fs "https://helpx.adobe.com/in/download-install/kb/creative-cloud-desktop-app-download.html" | grep -o 'https.*osx10.*dmg' | head -1 | cut -d '"' -f1)
+        downloadURL=$(curl -fs "https://helpx.adobe.com/download-install/kb/creative-cloud-desktop-app-download.html" | grep -o 'https.*osx10.*dmg' | head -1 | cut -d '"' -f1)
     fi
     #appNewVersion=$(curl -fs "https://helpx.adobe.com/creative-cloud/release-note/cc-release-notes.html" | grep "mandatory" | head -1 | grep -o "Version *.* released" | cut -d " " -f2)
     appNewVersion=$(echo $downloadURL | grep -o '[^x]*$' | cut -d '.' -f 1 | sed 's/_/\./g')
@@ -2239,13 +2358,6 @@ applenyfonts)
     packageID="com.apple.pkg.NYFonts"
     expectedTeamID="Software Update"
     ;;
-appleprovideoformats)
-    name="ProVideoFormats"
-    type="pkgInDmg"
-    downloadURL=$(curl -s "https://support.apple.com/en-us/106396" | grep -Eo 'https://updates\.cdn-apple\.com[^"]+ProVideoFormats\.dmg' | head -n 1)
-    packageID="com.apple.pkg.ProVideoFormats"
-    expectedTeamID="Software Update"
-    ;;
 applesfarabic)
     name="San Francisco Arabic"
     type="pkgInDmg"
@@ -2279,12 +2391,7 @@ sfsymbols)
     name="SF Symbols"
     type="pkgInDmg"
     downloadURL=$( curl -fs "https://developer.apple.com/sf-symbols/" | grep -oe "https.*Symbols.*\.dmg" | head -1 )
-    ver=${downloadURL##*SF-Symbols-}
-    ver=${ver%.dmg}
-    if [[ $ver != *.* ]]; then
-        ver=$ver.0
-    fi
-    appNewVersion=$ver
+    appNewVersion=$( echo "$downloadURL" | sed -E 's/.*SF-Symbols-([0-9.]*)\..*/\1/g')
     expectedTeamID="Software Update"
     ;;
 aquamacs)
@@ -3788,14 +3895,6 @@ detectxswift)
     appNewVersion=$(curl -fs https://s3.amazonaws.com/sqwarq.com/AppCasts/dtxswift_release_notes.html | grep Version | head -1 | sed -E 's/.*Version ([0-9.]*)\<.*/\1/')
     expectedTeamID="MAJ5XBJSG3"
     ;;
-determinate)
-    name="Determinate"
-    type="pkg"
-    packageID="systems.determinate.Determinate"
-    downloadURL=$(curl -fsIL https://install.determinate.systems/determinate-pkg/stable/Universal | awk -F' ' '/^location:/ {print $2}')
-    appNewVersion=$(echo "$downloadURL" | cut -d/ -f4)
-    expectedTeamID="X3JQ4VPJZ6"
-    ;;
 devonthink)
     # It's a zipped dmg file, needs function installAppInDmgInZip
     # credit: Søren Theilgaard (@theilgaard)
@@ -3857,10 +3956,18 @@ diskspace)
     ;;
 displaylinkmanager)
     name="DisplayLink Manager"
-    type="pkgInZip"
+    type="pkg"
     #packageID="com.displaylink.displaylinkmanagerapp"
     downloadURL=https://www.synaptics.com$(redirect=$(curl -sfL https://www.synaptics.com/products/displaylink-graphics/downloads/macos | grep -m 1 'class="download-link">Download' | sed 's/.*href="//' | sed 's/".*//') && curl -sfL "https://www.synaptics.com$redirect" | grep 'class="no-link"' | awk -F 'href="' '{print $2}' | awk -F '"' '{print $1}')
     appNewVersion=$(curl -sfL https://www.synaptics.com/products/displaylink-graphics/downloads/macos | grep -m 1 "Release:" | cut -d ' ' -f2)
+    expectedTeamID="73YQY62QM3"
+    ;;
+displaylinkmanagergraphicsconnectivity)
+    name="DisplayLink Manager Graphics Connectivity"
+    type="pkg"
+    packageID="com.displaylink.displaylinkmanagerapp"
+    downloadURL=https://www.synaptics.com$(curl -fLs "https://www.synaptics.com$(curl -fLs https://www.synaptics.com/products/displaylink-graphics/downloads/macos | xmllint --html --format - 2>/dev/null | grep "download-link" | head -n1 | cut -d'"' -f2)" | xmllint --html --format - 2>/dev/null | grep -oE "/.+\.pkg")
+    appNewVersion=$(echo "${downloadURL}" | grep -Eo '[0-9]\.[0-9]+(\.[0-9])?')
     expectedTeamID="73YQY62QM3"
     ;;
     displaynote)
@@ -4318,8 +4425,8 @@ favro)
 fellow)
     name="Fellow"
     type="dmg"
-    downloadURL="https://fellow.app/desktop/download/darwin/latest/"
-    appNewVersion="$(curl -fsIL "${downloadURL}" | grep -i ^location | sed 's/^.*[^0-9]\([0-9]*\.[0-9]*\.[0-9]*\).*$/\1/' | head -1)"
+    downloadURL="https://cdn.fellow.app/desktop/1.3.11/darwin/stable/universal/Fellow-1.3.11-universal.dmg"
+    appNewVersion=""
     expectedTeamID="2NF46HY8D8"
     ;;
 figma)
@@ -5656,6 +5763,20 @@ jetbrainsrider)
     fi
     downloadURL="https://download.jetbrains.com/product?code=${jetbrainscode}&latest&distribution=${jetbrainsdistribution}"
     appNewVersion=$( curl -fsIL "${downloadURL}" | grep -i "location" | tail -1 | sed -E 's/.*-([0-9.]+)[-.].*/\1/g' )
+    expectedTeamID="2ZEFAR8TH3"
+    ;;
+jetbrainsrustrover)
+    name="RustRover"
+    type="dmg"
+    jetbrainscode="RR"
+    if [[ $(arch) == i386 ]]; then
+      jetbrainsdistribution="mac"
+    elif [[ $(arch) == arm64 ]]; then
+      jetbrainsdistribution="macM1"
+    fi
+    downloadURL="https://download.jetbrains.com/product?code=${jetbrainscode}&latest&distribution=${jetbrainsdistribution}"
+    appNewVersion=$( curl -fsIL "${downloadURL}" | grep -i "location" | tail -1 | sed -E 's/.*-([0-9.]+)[-.].*/\1/g' )
+    appName="RustRover.app"
     expectedTeamID="2ZEFAR8TH3"
     ;;
 jetbrainsrubymine)
@@ -8255,8 +8376,7 @@ pulsar)
 pymol)
     name="PyMOL"
     type="dmg"
-    downloadURL=$(curl -s -L "https://pymol.org/" | grep -oE 'href="([^"]*installers/PyMOL-[^"]*-MacOS[^"]*\.dmg)"' | cut -d'"' -f2 | head -1)
-    appNewVersion="$(echo "${downloadURL}" | awk -F'/' '{ print $NF }' | awk -F'[-_]' '{ print $2 }')"
+    downloadURL=$(curl -s -L "https://pymol.org/" | grep -m 1 -Eio 'href="https://pymol.org/installers/PyMOL-(.*)-MacOS(.*).dmg"' | cut -c7- | sed -e 's/"$//')
     expectedTeamID="26SDDJ756N"
     ;;
 python)
@@ -10237,16 +10357,14 @@ vmwarefusion)
     appNewVersion=$(curl -fsIL ${curlOptions} "https://www.vmware.com/go/getfusion" | grep -i "^location" | awk '{print $2}' | sed 's/.*-\(.*\)-.*/\1/')
     expectedTeamID="EG7KH642X6"
     ;;
-vmwarehorizonclient|omnissahorizonclient)
-    name="Omnissa Horizon Client"
+vmwarehorizonclient)
+    name="VMware Horizon Client"
     type="pkgInDmg"
-    jsonData=$(curl -fsL 'https://customerconnect.omnissa.com/channel/public/api/v1.0/products/getRelatedDLGList?locale=en_US&category=desktop_end_user_computing&product=omnissa_horizon_clients&version=8&dlgType=PRODUCT_BINARY')
-    for var in code productId releasePackageId; do
-        local ${var}=$(<<< "$jsonData" sed -nE 's/.*Omnissa Horizon Client for macOS[^}]*"'$var'":"([^"]*).*/\1/p')
-    done
-    downloadURL=$(curl -fsL "https://customerconnect.omnissa.com/channel/public/api/v1.0/dlg/details?locale=en_US&downloadGroup=$code&productId=$productId&rPId=$releasePackageId" | grep -oE 'https://[^"]*' )
-    appNewVersion=$(<<< $downloadURL | grep -oE '\d+\.[0-9.]*\d')
-    expectedTeamID="S2ZMFGQM93"
+    downloadGroup=$(curl -fsL "https://my.vmware.com/channel/public/api/v1.0/products/getRelatedDLGList?locale=en_US&category=desktop_end_user_computing&product=vmware_horizon_clients&version=horizon_8&dlgType=PRODUCT_BINARY" | grep -o '[^"]*_MAC_[^"]*')
+    fileName=$(curl -fsL "https://my.vmware.com/channel/public/api/v1.0/dlg/details?locale=en_US&category=desktop_end_user_computing&product=vmware_horizon_clients&dlgType=PRODUCT_BINARY&downloadGroup=${downloadGroup}" | grep -o '"fileName":"[^"]*"' | cut -d: -f2 | sed 's/"//g')
+    downloadURL="https://download3.vmware.com/software/$downloadGroup/${fileName}"
+    appNewVersion=$(curl -fsL "https://my.vmware.com/channel/public/api/v1.0/dlg/details?locale=en_US&downloadGroup=${downloadGroup}" | grep -o '[^"]*\.dmg[^"]*' | sed 's/.*-\(.*\)-.*/\1/')
+    expectedTeamID="EG7KH642X6"
     ;;
 vonagebusiness)
     # @BigMacAdmin (Second Son Consulting) with assists from @Isaac, @Bilal, and @Theilgaard
@@ -10297,13 +10415,6 @@ wallyezflash)
     #appNewVersion=$(curl -fsIL "${downloadURL}" | grep -i ^location | head -1 | sed -E 's/.*\/[a-zA-Z\-]*-([0-9.]*)\..*/\1/g')
     expectedTeamID="V32BWKSNYH"
     #versionKey="CFBundleVersion"
-    ;;
-warp)
-    name="Warp"
-    type="dmg"
-    downloadURL="https://app.warp.dev/download"
-    appNewVersion=$(curl -s https://releases.warp.dev/channel_versions.json | grep -A 3 '"stable"' | grep '"version"' | head -n 1 | sed -E 's/.*"version": *"v([^"]+)".*/\1/')
-    expectedTeamID="2BBY89MBSN"
     ;;
 wavescentral)
     name="Waves Central"
