@@ -423,9 +423,9 @@ cleanupAndExit() { # $1 = exit code, $2 message, $3 level
   
   # This will be the table in ALA to which you want to send the log information
   # ALA Production Table:
-  # CustomLogName="Mac_ADT_v1"
+  CustomLogName="Mac_ADT_v1"
   # ALA Dev Testing Table:
-  CustomLogName="Mac_Test_ALA_Config"
+  # CustomLogName="Mac_Test_ALA_Config"
   
   # Data that should remain static for the JSON
   FinishTime=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
