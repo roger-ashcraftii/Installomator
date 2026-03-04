@@ -11,6 +11,8 @@ StartTime=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 # Insert script to be wrapped, including any necessary triggered packages
 #########################################################################################
 
+label="" # if no label is sent to the script, this will be used
+
 # Installomator
 #
 # Downloads and installs Applications
@@ -36,14 +38,19 @@ export PATH=/usr/bin:/bin:/usr/sbin:/sbin
 # also no actual installation will be performed
 # debug mode 1 will download to the directory the script is run in, but will not check the version
 # debug mode 2 will download to the temp directory, check for blocking processes, check the version, but will not install anything or remove the current version
-DEBUG=1
+DEBUG=0
 
 # notify behavior
-NOTIFY=success
+NOTIFY="$5"
 # options:
 #   - success      notify the user on success
 #   - silent       no notifications
 #   - all          all notifications (great for Self Service installation)
+
+# Capture Jamf script parameters 7 and 8 for ALA
+ALADeploymentType="$7"      # e.g. Install / Uninstall / Enable / Disable
+ALADeploymentMethod="$8"    # e.g. Self Service / Deployment
+ALACustomLogName="$9"       # e.g. Mac_Test_ALA_Config / Mac_ADT_v1
 
 # time in seconds to wait for a prompt to be answered before exiting the script
 PROMPT_TIMEOUT=86400
@@ -56,7 +63,7 @@ PROMPT_TIMEOUT=86400
 
 # behavior when blocking processes are found
 # BLOCKING_PROCESS_ACTION is ignored if app label uses updateTool
-BLOCKING_PROCESS_ACTION=tell_user
+BLOCKING_PROCESS_ACTION=quit_kill
 # options:
 #   - ignore       continue even when blocking processes are found
 #   - quit         app will be told to quit nicely if running
@@ -93,7 +100,7 @@ BLOCKING_PROCESS_ACTION=tell_user
 
 
 # logo-icon used in dialog boxes if app is blocking
-LOGO=appstore
+LOGO=""
 # options:
 #   - appstore      Icon is Apple App Store (default)
 #   - jamf          JAMF Pro
@@ -120,7 +127,7 @@ IGNORE_APP_STORE_APPS=no
 #                  Known bad example: Slack will lose all settings.
 
 # Owner of copied apps
-SYSTEMOWNER=0
+SYSTEMOWNER=1
 # options:
 #  - 0             Current user will be owner of copied apps, just like if they
 #                  installed it themselves (default).
@@ -128,7 +135,7 @@ SYSTEMOWNER=0
 #                  Useful for shared machines.
 
 # install behavior
-INSTALL=""
+INSTALL="force"
 # options:
 #  -               When not set, the software will only be installed
 #                  if it is newer/different in version
@@ -179,7 +186,7 @@ PROXY=""
 
 # This requires Swift Dialog 2.11.2 or higher.
 
-DIALOG_CMD_FILE=""
+DIALOG_CMD_FILE="/var/tmp/dialogInstallomator.log"
 # When this variable is set, Installomator will write Swift Dialog commands to this path.
 # Installomator will not launch Swift Dialog. The process calling Installomator will have
 # launch and configure Swift Dialog to listen to this file.
@@ -190,7 +197,7 @@ DIALOG_LIST_ITEM_NAME=""
 # listitem.
 # When the variable is unset, progress will be sent to Swift Dialog's main progress bar.
 
-NOTIFY_DIALOG=0
+NOTIFY_DIALOG=1
 # If this variable is set to 1, then we will check for installed Swift Dialog v. 2 or later, and use that for notification
 
 
@@ -322,7 +329,7 @@ NOTIFY_DIALOG=0
 #
 ### Logging
 # Logging behavior
-LOGGING="INFO"
+LOGGING="$6"
 # options:
 #   - DEBUG     Everything is logged
 #   - INFO      (default) normal logging level
@@ -357,7 +364,7 @@ if [[ $(/usr/bin/arch) == "arm64" ]]; then
         rosetta2=no
     fi
 fi
-VERSION="10.8beta"
+VERSION="10.8"
 VERSIONDATE="2025-03-28"
 
 # MARK: Functions
@@ -413,9 +420,9 @@ cleanupAndExit() { # $1 = exit code, $2 message, $3 level
   # Version of policy: Ex. 1.2.3.4, 2024-01-01, R1
   Version="$appNewVersion"
   # Ex. Install, Uninstall, Enable, Disable
-  DeploymentType="Install"
+  DeploymentType="$ALADeploymentType"
   # Ex. Self Service, Deployment
-  DeploymentMethod="App-Auto-Patch"
+  DeploymentMethod="$ALADeploymentMethod"
   
   #########################################################################################
   # You should not need to modify anything below this point
@@ -423,9 +430,9 @@ cleanupAndExit() { # $1 = exit code, $2 message, $3 level
   
   # This will be the table in ALA to which you want to send the log information
   # ALA Production Table:
-  CustomLogName="Mac_ADT_v1"
+  # CustomLogName="Mac_ADT_v1"
   # ALA Dev Testing Table:
-  # CustomLogName="Mac_Test_ALA_Config"
+  CustomLogName="$ALACustomLogName"
   
   # Data that should remain static for the JSON
   FinishTime=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
@@ -532,21 +539,29 @@ displaydialogContinue() { # $1: message $2: title
 }
 
 displaynotification() { # $1: message $2: title
-    message=${1:-"Message"}
-    title=${2:-"Notification"}
-    manageaction="/Library/Application Support/JAMF/bin/Management Action.app/Contents/MacOS/Management Action"
-    hubcli="/usr/local/bin/hubcli"
-    swiftdialog="/usr/local/bin/dialog"
-
-    if [[ "$($swiftdialog --version | cut -d "." -f1)" -ge 2 && "$NOTIFY_DIALOG" -eq 1 ]]; then
-        "$swiftdialog" --notification --title "$title" --message "$message"
-    elif [[ -x "$manageaction" ]]; then
-         "$manageaction" -message "$message" -title "$title" &
-    elif [[ -x "$hubcli" ]]; then
-         "$hubcli" notify -t "$title" -i "$message" -c "Dismiss"
+  message=${1:-"Message"}
+  title=${2:-"Notification"}
+  manageaction="/Library/Application Support/JAMF/bin/Management Action.app/Contents/MacOS/Management Action"
+  hubcli="/usr/local/bin/hubcli"
+  swiftdialog="/usr/local/bin/dialog"
+  
+  if [[ "$($swiftdialog --version | cut -d "." -f1)" -ge 2 && "$NOTIFY_DIALOG" -eq 1 ]]; then
+    # SwiftDialog v2+ with notifications enabled
+    if [[ -n "$LOGO" && -f "$LOGO" ]]; then
+      "$swiftdialog" --notification --title "$title" --message "$message" --icon "$LOGO"
     else
-        runAsUser osascript -e "display notification \"$message\" with title \"$title\""
+      "$swiftdialog" --notification --title "$title" --message "$message"
     fi
+  elif [[ -x "$manageaction" ]]; then
+    # Jamf Management Action notification
+    "$manageaction" -message "$message" -title "$title" &
+  elif [[ -x "$hubcli" ]]; then
+    # hubcli notification
+    "$hubcli" notify -t "$title" -i "$message" -c "Dismiss"
+  else
+    # Native macOS notification as fallback
+    runAsUser osascript -e "display notification \"$message\" with title \"$title\""
+  fi
 }
 
 printlog(){
@@ -1366,27 +1381,52 @@ runUpdateTool() {
 }
 
 finishing() {
-    printlog "Finishing..."
-
-    sleep 3 # wait a moment to let spotlight catch up
-    getAppVersion
-
-    if [[ -z $appNewVersion ]]; then
-        message="Installed $name"
+  printlog "Finishing..."
+  
+  sleep 3 # wait a moment to let spotlight catch up
+  getAppVersion
+  
+  if [[ -z $appNewVersion ]]; then
+    message="Installed $name"
+  else
+    message="Installed $name, version $appNewVersion"
+  fi
+  
+  #
+  # Sourcetree-specific ownership/permission fix
+  # Only runs when the Installomator label is "sourcetree"
+  # (i.e. you're triggering it from Jamf with that label)
+  #
+  if [[ "$label" == "sourcetree" ]]; then
+    if [[ -d "/Applications/Sourcetree.app" ]]; then
+      printlog "Label is 'sourcetree' and /Applications/Sourcetree.app exists – fixing ownership and permissions" INFO
+      
+      currentConsoleUser="$(stat -f%Su /dev/console)"
+      
+      # Match what you ran manually:
+      #   sudo chown -R $(stat -f%Su /dev/console):admin /Applications/Sourcetree.app
+      #   sudo chmod -R 755 /Applications/Sourcetree.app
+      #
+      # Script is already running as root under Jamf, so no sudo needed.
+      chown -R "${currentConsoleUser}:admin" "/Applications/Sourcetree.app"
+      chmod -R 755 "/Applications/Sourcetree.app"
+      
+      printlog "Finished fixing ownership and permissions on /Applications/Sourcetree.app" INFO
     else
-        message="Installed $name, version $appNewVersion"
+      printlog "Label 'sourcetree' used but /Applications/Sourcetree.app not found – skipping chown/chmod" WARN
     fi
-
-    printlog "$message" REQ
-
-    if [[ $currentUser != "loginwindow" && ( $NOTIFY == "success" || $NOTIFY == "all" ) ]]; then
-        printlog "notifying"
-        if [[ $updateDetected == "YES" ]]; then
-            displaynotification "$message" "$name update complete!"
-        else
-            displaynotification "$message" "$name installation complete!"
-        fi
+  fi
+  
+  printlog "$message" REQ
+  
+  if [[ $currentUser != "loginwindow" && ( $NOTIFY == "success" || $NOTIFY == "all" ) ]]; then
+    printlog "notifying"
+    if [[ $updateDetected == "YES" ]]; then
+      displaynotification "$message" "$name update complete!"
+    else
+      displaynotification "$message" "$name installation complete!"
     fi
+  fi
 }
 
 # Detect if there is an app actively making a display sleep assertion, e.g.
@@ -1924,9 +1964,9 @@ adobecreativeclouddesktop)
         exit 75
     fi
     if [[ "$(arch)" == "arm64" ]]; then
-        downloadURL=$(curl -fs "https://helpx.adobe.com/download-install/kb/creative-cloud-desktop-app-download.html" | grep -o 'https.*macarm64.*dmg' | head -1 | cut -d '"' -f1)
+      downloadURL=$(curl -fs "https://helpx.adobe.com/in/download-install/kb/creative-cloud-desktop-app-download.html" | grep -o 'https.*macarm64.*dmg' | head -1 | cut -d '"' -f1)
     else
-        downloadURL=$(curl -fs "https://helpx.adobe.com/download-install/kb/creative-cloud-desktop-app-download.html" | grep -o 'https.*osx10.*dmg' | head -1 | cut -d '"' -f1)
+      downloadURL=$(curl -fs "https://helpx.adobe.com/in/download-install/kb/creative-cloud-desktop-app-download.html" | grep -o 'https.*osx10.*dmg' | head -1 | cut -d '"' -f1)
     fi
     #appNewVersion=$(curl -fs "https://helpx.adobe.com/creative-cloud/release-note/cc-release-notes.html" | grep "mandatory" | head -1 | grep -o "Version *.* released" | cut -d " " -f2)
     appNewVersion=$(echo $downloadURL | grep -o '[^x]*$' | cut -d '.' -f 1 | sed 's/_/\./g')
@@ -1962,7 +2002,7 @@ adobereaderdc-update)
       printlog "Missing locale data, this will cause the updater to fail.  Deleting Adobe Acrobat Reader DC.app and installing fresh." INFO
       rm -Rf "$readerPath"
       unset $readerPath
-    fi
+    fi      
     if [[ -n $readerPath ]]; then
       mkdir -p "/Library/Application Support/Adobe/Acrobat/11.0"
       defaults write "/Library/Application Support/Adobe/Acrobat/11.0/com.adobe.Acrobat.InstallerOverrides.plist" ReaderAppPath "$readerPath"
@@ -2005,9 +2045,43 @@ adobereaderdc-update)
     updateToolArguments=( --productVersions=RDR )
     updateToolLog="/Users/$currentUser/Library/Logs/RemoteUpdateManager.log"
     updateToolLogDateFormat="%m/%d/%y %H:%M:%S"
+    
+    # Check if RemoteUpdateManager exists, if not, unset updateTool
+    if [[ ! -e "/usr/local/bin/RemoteUpdateManager" ]]; then
+      printlog "RemoteUpdateManager not found, unsetting updateTool so that app reopens after update." INFO
+      updateTool=""
+    fi
+    
     expectedTeamID="JQ525L2MZD"
-    blockingProcesses=( "Acrobat Pro DC" "AdobeAcrobat" "AdobeReader" "Distiller" )
+    blockingProcesses=("Acrobat Pro DC" "AdobeAcrobat" "AdobeReader" "Distiller" "AdobeResourceSynchronizer" "Acrobat Synchronizer" "adobe_licensing_helper" "Acrobat Updater" "com.adobe.Acrobat.Pro")
     Company="Adobe"
+    
+    # Check if Adobe Reader was running prior to kill
+    if pgrep -x "AdobeReader" >/dev/null 2>&1; then
+      wasReaderRunning=1
+      printlog "Adobe Reader is running (detected as AdobeReader)." INFO
+    elif pgrep -x "Adobe Acrobat Reader" >/dev/null 2>&1; then
+      wasReaderRunning=1
+      printlog "Adobe Reader is running (detected as Adobe Acrobat Reader)." INFO
+    else
+      wasReaderRunning=0
+      printlog "Adobe Reader was not running before update." INFO
+    fi
+      
+    printlog "Quitting and killing all Adobe-related processes to prepare for update." INFO
+    pkill -9 -f "Adobe"
+    pkill -9 -f "Acrobat"
+    pkill -9 -f "com.adobe"
+    pkill -9 -f "AdobeResourceSynchronizer"
+    pkill -9 -f "Acrobat Synchronizer"
+    pkill -9 -f "adobe_licensing_helper"
+    pkill -9 -f "Acrobat Updater"
+    sleep 5
+      
+    # Tell Installomator to reopen only if app was actually running
+    if [[ "$wasReaderRunning" == "1" ]]; then
+      appClosed=1
+    fi
     ;;
 affinitydesigner2)
     name="Affinity Designer 2"
@@ -2528,7 +2602,6 @@ atlassiancompanion)
     appNewVersion=$(getJSONValue "$(curl -fsL https://update-nucleus.atlassian.com/Atlassian-Companion/291cb34fe2296e5fb82b83a04704c9b4/darwin/x64/RELEASES.json)" "currentRelease" )
     expectedTeamID="UPXU4CQZ5P"
     ;;
-
 audacity)
     name="Audacity"
     type="dmg"
@@ -3434,7 +3507,6 @@ cinema4d)
     CLIArguments=( --mode unattended --unattendedmodeui none )
     expectedTeamID="4ZY22YGXQG"
     ;;
-
 cinema4d2023)
     name="Cinema 4D"
     type="dmg"
@@ -3509,6 +3581,13 @@ citrixworkspace)
     appNewVersion=$(newVersionString | cut -d ' ' -f2 | cut -d '(' -f1)
     versionKey="CitrixVersionString"
     expectedTeamID="S272Y5R93J"
+    ;;
+claudedesktop)
+    name="Claude"
+    type="zip"
+    appNewVersion=$(curl -fs "https://downloads.claude.ai/releases/darwin/universal/RELEASES.json" | grep -o '"currentRelease":"[^"]*"' | cut -d'"' -f4)
+    downloadURL=$(curl -fs "https://downloads.claude.ai/releases/darwin/universal/RELEASES.json" | grep -o '"url":"[^"]*"' | cut -d'"' -f4)
+    expectedTeamID="Q6L2SF6YDW"
     ;;
 cleartouchcollage)
     name="Collage"
@@ -3970,7 +4049,7 @@ displaylinkmanagergraphicsconnectivity)
     appNewVersion=$(echo "${downloadURL}" | grep -Eo '[0-9]\.[0-9]+(\.[0-9])?')
     expectedTeamID="73YQY62QM3"
     ;;
-    displaynote)
+displaynote)
     name="displaynote"
     type="pkg"
     packageID="com.displaynote.DisplayNoteApp"
@@ -4651,7 +4730,6 @@ com.Image-Line.pkg.24ONLINE"
         sed 's/.*"version":"\([0-9.]*\)".*/\1/')
     expectedTeamID="N68WEP5ZZZ"
     ;;
-    
 flux)
     name="Flux"
     type="zip"
@@ -4682,7 +4760,6 @@ fontexplorer)
     appNewVersion=$( curl -fsL http://fex.linotype.com/update/client/mac/pro/version.plist | grep string | tail -n 1 | sed 's/[^0-9.]//g' )
     expectedTeamID="2V7G2B7WG4"
     ;;
-
 fork)
     name="Fork"
     type="dmg"
@@ -4702,7 +4779,6 @@ franz)
     appNewVersion="$(versionFromGit meetfranz franz)"
     expectedTeamID="TAC9P63ANZ"
     ;;
-
 freeplane)
     name="Freeplane"
     type="dmg"
@@ -5023,15 +5099,15 @@ gpgsync)
     expectedTeamID="P24U45L8P5"
     ;;
 grammarly)
-     name="Grammarly Desktop"
-     type="dmg"
-     packageID="com.grammarly.ProjectLlama"
-     downloadURL="https://download-mac.grammarly.com/Grammarly.dmg"
-     expectedTeamID="W8F64X92K3"
-     # appName="Grammarly Installer.app"
-     installerTool="Grammarly Installer.app"
-     CLIInstaller="Grammarly Installer.app/Contents/MacOS/Grammarly Desktop"
-;;
+    name="Grammarly Desktop"
+    type="dmg"
+    packageID="com.grammarly.ProjectLlama"
+    downloadURL="https://download-mac.grammarly.com/Grammarly.dmg"
+    expectedTeamID="W8F64X92K3"
+    # appName="Grammarly Installer.app"
+    installerTool="Grammarly Installer.app"
+    CLIInstaller="Grammarly Installer.app/Contents/MacOS/Grammarly Desktop"
+    ;;
 grandperspective)
     name="GrandPerspective"
     type="dmg"
@@ -5056,12 +5132,12 @@ grasshopper)
     expectedTeamID="KD6L2PTK2Q"
     ;;
 grooveomnidialerenterpriseedition)
-	name="Groove Omnidialer Enterprise Edition"
-	type="zip"
-	appNewVersion=$( curl -fs 'https://groove-dialer.s3.us-west-2.amazonaws.com/electron/enterprise/latest-mac.yml' | grep ^version: | cut -c 10-21 ) 
-	downloadURL="https://groove-dialer.s3.us-west-2.amazonaws.com/electron/enterprise/Groove+OmniDialer+Enterprise+Edition-"$appNewVersion"-universal-mac.zip" 
-	expectedTeamID="ZDYDJ5XPF3"
-;;
+    name="Groove Omnidialer Enterprise Edition"
+    type="zip"
+    appNewVersion=$( curl -fs 'https://groove-dialer.s3.us-west-2.amazonaws.com/electron/enterprise/latest-mac.yml' | grep ^version: | cut -c 10-21 ) 
+    downloadURL="https://groove-dialer.s3.us-west-2.amazonaws.com/electron/enterprise/Groove+OmniDialer+Enterprise+Edition-"$appNewVersion"-universal-mac.zip" 
+    expectedTeamID="ZDYDJ5XPF3"
+    ;;
 guardianbrowser)
 	# A privacy-focused web browser designed to enhance security with built-in ad blocking, tracker protection, and encrypted browsing
     name="Guardian Browser"
@@ -5124,13 +5200,13 @@ hazel)
     expectedTeamID="86Z3GCJ4MF"
     ;;
 hmavpn)
-name="HMA-VPN"
-type="pkgInDmg"
-packageID="com.privax.osx.provpn"
-downloadURL="https://s-mac-sl.avcdn.net/macosx/privax/HMA-VPN.dmg"
-appNewVersion=""
-expectedTeamID="96HLSU34RN"
-;;
+      name="HMA-VPN"
+      type="pkgInDmg"
+      packageID="com.privax.osx.provpn"
+      downloadURL="https://s-mac-sl.avcdn.net/macosx/privax/HMA-VPN.dmg"
+      appNewVersion=""
+      expectedTeamID="96HLSU34RN"
+      ;;
 homebrew)
     name="Homebrew"
     type="pkg"
@@ -5299,7 +5375,6 @@ igv)
     appName="${name}_${appNewVersion}.app"
     expectedTeamID="R787A9V6VV"
     ;;
-
 iina)
     name="IINA"
     type="dmg"
@@ -5380,12 +5455,12 @@ installomator_theile)
     blockingProcesses=( NONE )
     ;;
 installomatormate)
-	name="InstallomatorMate"
-	type="zip"
-	downloadURL="https://hennig.nu/repo/installomatormate/InstallomatorMate.zip"
+    name="InstallomatorMate"
+    type="zip"
+    downloadURL="https://hennig.nu/repo/installomatormate/InstallomatorMate.zip"
     appNewVersion=$( curl -H "User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.1 Safari/605.1.15" -fs https://hennig.nu/repo/installomatormate/appcast.xml | sed -n 's/.*<sparkle:shortVersionString>\(.*\)<\/sparkle:shortVersionString>.*/\1/p' | head -1 )
-	expectedTeamID="AGXG97HK25"
-	;;
+    expectedTeamID="AGXG97HK25"
+    ;;
 ipswupdater)
     name="IPSW Updater"
     type="zip"
@@ -5765,6 +5840,7 @@ jetbrainsrider)
     appNewVersion=$( curl -fsIL "${downloadURL}" | grep -i "location" | tail -1 | sed -E 's/.*-([0-9.]+)[-.].*/\1/g' )
     expectedTeamID="2ZEFAR8TH3"
     ;;
+# Added Rust Rover manually since it isn't supported by default
 jetbrainsrustrover)
     name="RustRover"
     type="dmg"
@@ -5778,7 +5854,7 @@ jetbrainsrustrover)
     appNewVersion=$( curl -fsIL "${downloadURL}" | grep -i "location" | tail -1 | sed -E 's/.*-([0-9.]+)[-.].*/\1/g' )
     appName="RustRover.app"
     expectedTeamID="2ZEFAR8TH3"
-    ;;
+      ;;
 jetbrainsrubymine)
      name="RubyMine"
      type="dmg"
@@ -6447,13 +6523,13 @@ macfuse)
     expectedTeamID="3T5GSNBU6W"
     ;;
 masterfader)
-#credit: @sintichn macadmins slack
-name="MasterFader"
-type="dmg"
-appNewVersion="$(curl -sf https://mackie.com/en/products/mixers/master-fader/master_fader.html | grep -m 1 "macOS" | sed -n 's/.*Fader \([0-9]\)\.\([0-9]\).*/\1_\2_/p')"
-downloadURL="https://mackie.com/img/file_resources/Master_Fader_v"$appNewVersion"Setup.dmg"
-expectedTeamID="6X5AC85L48"
-;;
+    #credit: @sintichn macadmins slack
+    name="MasterFader"
+    type="dmg"
+    appNewVersion="$(curl -sf https://mackie.com/en/products/mixers/master-fader/master_fader.html | grep -m 1 "macOS" | sed -n 's/.*Fader \([0-9]\)\.\([0-9]\).*/\1_\2_/p')"
+    downloadURL="https://mackie.com/img/file_resources/Master_Fader_v"$appNewVersion"Setup.dmg"
+    expectedTeamID="6X5AC85L48"
+    ;;
 macoslaps)
     name="macOSLAPS"
     type="pkg"
@@ -7068,7 +7144,7 @@ microsoftteams-rollingout)
     type="pkg"
     packageID="com.microsoft.teams2"
     # Fetch the latest version number from the Microsoft documentation page
-    appNewVersion=$(curl -s https://learn.microsoft.com/en-us/officeupdates/teams-app-versioning | awk '/<h4 id="mac-version-history">Mac version history<\/h4>/,/<\/table>/' | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | head -n 1)
+    appNewVersion=$(curl -s https://learn.microsoft.com/en-us/officeupdates/teams-app-versioning | awk '/<h4 id="mac">Mac<\/h4>/,/<\/table>/' | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | head -n 1)
     downloadURL="https://statics.teams.cdn.office.net/production-osx/${appNewVersion}/MicrosoftTeams.pkg"
     expectedTeamID="UBF8T346G9"
     blockingProcesses=( Teams MSTeams "Microsoft Teams" "Microsoft Teams WebView" "Microsoft Teams WebView Helper" "Microsoft Teams Launcher" "Microsoft Teams (work preview)" "Microsoft Teams classic Helper" "com.microsoft.teams2.respawn")
@@ -7682,7 +7758,6 @@ nweasecuretestingbrowser)
     appNewVersion=""
     expectedTeamID="SRTXZJ7SQ3"
     ;;
-
 obs)
     name="OBS"
     type="dmg"
@@ -10439,9 +10514,9 @@ webexteams)
     appNewVersion=$(curl -fs https://help.webex.com/en-us/article/8dmbcr/Webex-App-%7C-What%27s-New | tr '"' "\n" |  grep "Mac—"| head -1|sed 's/[^0-9\.]//g' )
     blockingProcesses=( "Webex" "Webex Teams" "Cisco WebEx Start" "WebexHelper")
     if [[ $(arch) == arm64 ]]; then
-        downloadURL="https://binaries.webex.com/WebexDesktop-MACOS-Apple-Silicon-Gold/Webex.dmg"
+        downloadURL="https://binaries.webex.com/webex-macos-apple-silicon/Webex.dmg"
     elif [[ $(arch) == i386 ]]; then
-        downloadURL="https://binaries.webex.com/WebexTeamsDesktop-MACOS-Gold/Webex.dmg"
+      downloadURL="https://binaries.webex.com/webex-macos-intel/Webex.dmg"
     fi
     expectedTeamID="DE8Y96K9QP"
     ;;
@@ -11013,6 +11088,8 @@ case $LOGO in
     jamf)
         # Jamf Pro
         LOGO="/Library/Application Support/JAMF/Jamf.app/Contents/Resources/AppIcon.icns"
+        # Use this when you are wanting to 
+        #LOGO="/Library/Application Support/JAMF/bin/Asurion-icon.icns"
         ;;
     mosyleb)
         # Mosyle Business
