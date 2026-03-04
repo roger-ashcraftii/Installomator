@@ -564,54 +564,67 @@ displaynotification() { # $1: message $2: title
   fi
 }
 
-printlog(){
-    [ -z "$2" ] && 2=INFO
-    log_message=$1
-    log_priority=$2
+printlog() {
+    local log_message="$1"
+    local log_priority="${2:-INFO}"
+    local timestamp
     timestamp=$(date +%F\ %T)
 
-    # Check to make sure that the log isn't the same as the last, if it is then don't log and increment a timer.
-    if [[ ${log_message} == ${previous_log_message} ]]; then
-        let logrepeat=$logrepeat+1
+    # Skip duplicate consecutive messages
+    if [[ "${log_message}" == "${previous_log_message}" ]]; then
+        let logrepeat=logrepeat+1
         return
     fi
-    previous_log_message=$log_message
+    previous_log_message="${log_message}"
 
-    # Extra spaces for log_priority alignment
-    space_char=""
+    # Align priority column a bit
+    local space_char=""
     if [[ ${#log_priority} -eq 3 ]]; then
         space_char="  "
     elif [[ ${#log_priority} -eq 4 ]]; then
         space_char=" "
     fi
 
-    # Once we finally stop getting duplicate logs output the number of times we got a duplicate.
-    if [[ $logrepeat -gt 1 ]];then
-        echo "$timestamp" : "${log_priority}${space_char} : $label : Last Log repeated ${logrepeat} times" | tee -a $log_location
+    # If we had repeats, emit a summary line once the message changes
+    if [[ ${logrepeat:-0} -gt 1 ]]; then
+        echo "$timestamp : ${log_priority}${space_char} : $label : Last Log repeated ${logrepeat} times" | tee -a "$log_location"
 
-        if [[ ! -z $datadogAPI ]]; then
-            curl -s -X POST https://http-intake.logs.datadoghq.com/v1/input -H "Content-Type: text/plain" -H "DD-API-KEY: $datadogAPI" -d "${log_priority} : $mdmURL : $APPLICATION : $VERSION : $SESSION : Last Log repeated ${logrepeat} times" > /dev/null
+        if [[ -n "${datadogAPI}" ]]; then
+            curl -s -X POST "https://http-intake.logs.datadoghq.com/v1/input" \
+                -H "Content-Type: text/plain" \
+                -H "DD-API-KEY: ${datadogAPI}" \
+                -d "${log_priority} : ${mdmURL} : ${APPLICATION} : ${VERSION} : ${SESSION} : Last Log repeated ${logrepeat} times" > /dev/null
         fi
         logrepeat=0
     fi
 
-    # If the datadogAPI key value is set and our logging level is greater than or equal to our set level
-    # then post to Datadog's HTTPs endpoint.
-    if [[ -n $datadogAPI && ${levels[$log_priority]} -ge ${levels[$datadogLoggingLevel]} ]]; then
-        while IFS= read -r logmessage; do
-            curl -s -X POST https://http-intake.logs.datadoghq.com/v1/input -H "Content-Type: text/plain" -H "DD-API-KEY: $datadogAPI" -d "${log_priority} : $mdmURL : Installomator-${label} : ${VERSIONDATE//-/} : $SESSION : ${logmessage}" > /dev/null
-        done <<< "$log_message"
+    # Datadog logging (guard against missing/unknown priorities to avoid math errors)
+    if [[ -n "${datadogAPI}" ]]; then
+        local lp="${levels[$log_priority]:-${levels[INFO]}}"
+        local dd="${levels[$datadogLoggingLevel]:-${levels[INFO]}}"
+
+        if [[ ${lp} -ge ${dd} ]]; then
+            while IFS= read -r logline; do
+                curl -s -X POST "https://http-intake.logs.datadoghq.com/v1/input" \
+                    -H "Content-Type: text/plain" \
+                    -H "DD-API-KEY: ${datadogAPI}" \
+                    -d "${log_priority} : ${mdmURL} : Installomator-${label} : ${VERSIONDATE//-/} : ${SESSION} : ${logline}" > /dev/null
+            done <<< "${log_message}"
+        fi
     fi
 
-    # If our logging level is greaterthan or equal to our set level then output locally.
-    if [[ ${levels[$log_priority]} -ge ${levels[$LOGGING]} ]]; then
-        while IFS= read -r logmessage; do
+    # Local logging (guard against missing/unknown priorities to avoid math errors)
+    local lp2="${levels[$log_priority]:-${levels[INFO]}}"
+    local lg="${levels[$LOGGING]:-${levels[INFO]}}"
+
+    if [[ ${lp2} -ge ${lg} ]]; then
+        while IFS= read -r logline; do
             if [[ "$(whoami)" == "root" ]]; then
-                echo "$timestamp" : "${log_priority}${space_char} : $label : ${logmessage}" | tee -a $log_location
+                echo "$timestamp : ${log_priority}${space_char} : $label : ${logline}" | tee -a "$log_location"
             else
-                echo "$timestamp" : "${log_priority}${space_char} : $label : ${logmessage}"
+                echo "$timestamp : ${log_priority}${space_char} : $label : ${logline}"
             fi
-        done <<< "$log_message"
+        done <<< "${log_message}"
     fi
 }
 
